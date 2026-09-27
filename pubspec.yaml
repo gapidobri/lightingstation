@@ -1,0 +1,21 @@
+name: lightingstation
+description: Live remote control for ChamSys MagicQ.
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  magicq_remote:
+    path: packages/magicq_remote
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: false

@@ -1,0 +1,13 @@
+name: magicq_remote
+description: >-
+  Client for the ChamSys MagicQ remote protocols: the CHWP protocol used by
+  the MagicQ Remote mobile app, and CREP (ChamSys Remote Ethernet Protocol).
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6
