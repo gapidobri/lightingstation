@@ -5,6 +5,7 @@ import 'chwp/execute.dart';
 import 'chwp/messages.dart';
 import 'chwp/packet.dart';
 import 'chwp/transport.dart';
+import 'chwp/window.dart';
 import 'crep/crep.dart';
 
 /// True for "address already in use" on iOS/macOS (48), Linux/Android (98)
@@ -26,6 +27,8 @@ class MagicQConnectException implements Exception {
 /// protocol). CHWP has no playback fader messages, so playback levels and
 /// buttons go over CREP, which must be enabled on the console separately.
 /// With "ChamSys Rem (tx + rx)", MagicQ also broadcasts playback state back.
+/// Playback names and current cues are read from MagicQ's Playbacks window
+/// over CHWP, which needs no CREP setup.
 class MagicQClient {
   MagicQClient._(this.console, this._transport, this._crep, this.crepPort, {required this.receivesPlaybackState}) {
     _sub = _transport.packets.where((d) => d.from == console).listen(_onDatagram);
@@ -33,12 +36,7 @@ class MagicQClient {
       if (event != RawSocketEvent.read) return;
       Datagram? d;
       while ((d = _crep.receive()) != null) {
-        // TEMP debug: log every CREP datagram, regardless of source, to
-        // diagnose missing playback feedback. Remove once resolved.
-        // ignore: avoid_print
-        print('CREP rx from ${d!.address.address} (console=${console.address}): '
-            '${String.fromCharCodes(d.data)}');
-        if (d.address == console) _onCrep(decodeCrep(d.data));
+        if (d!.address == console) _onCrep(decodeCrep(d.data));
       }
     });
   }
@@ -113,7 +111,12 @@ class MagicQClient {
   final _online = StreamController<bool>.broadcast();
   final _playbacks = StreamController<PlaybackState>.broadcast();
   final _playbackPages = StreamController<int>.broadcast();
+  final _playbackInfo = StreamController<PlaybackInfo>.broadcast();
+  final _windowHeaders = StreamController<WindowInfo>.broadcast();
+  final _windowItems = StreamController<WindowItemsChunk>.broadcast();
+  final _windowColumns = StreamController<WindowColumns>.broadcast();
   final _assembler = ExecutePageAssembler();
+  final _playbackWindow = PlaybackWindowReader();
 
   Timer? _pollTimer;
   Timer? _flushTimer;
@@ -140,6 +143,17 @@ class MagicQClient {
   /// Playback page changes reported by MagicQ over CREP (tx mode only).
   Stream<int> get playbackPages => _playbackPages.stream;
 
+  /// Playback names and current cues, polled from the Playbacks window.
+  Stream<PlaybackInfo> get playbackInfo => _playbackInfo.stream;
+
+  /// Raw window replies, for [requestWindow] and the Playbacks window poll.
+  Stream<WindowInfo> get windowHeaders => _windowHeaders.stream;
+  Stream<WindowItemsChunk> get windowItems => _windowItems.stream;
+  Stream<WindowColumns> get windowColumns => _windowColumns.stream;
+
+  /// The last console status, or null before the first one.
+  ConsoleStatus? lastStatus;
+
   Future<ConnectReply> _handshake(Duration timeout) async {
     for (var attempt = 0; attempt < 3; attempt++) {
       _sendConnect();
@@ -157,6 +171,8 @@ class MagicQClient {
 
   void _startPolling(Duration interval) {
     requestExecutePage();
+    requestPlaybackWindow();
+    var tick = 0;
     _pollTimer = Timer.periodic(interval, (_) {
       final silent = DateTime.now().difference(_lastReceived);
       if (silent > interval * 8) {
@@ -164,8 +180,114 @@ class MagicQClient {
         _sendConnect();
       }
       requestExecutePage();
+      // Names change rarely, and CREP feedback reports cues at once, so
+      // every other tick is enough.
+      if ((tick++).isOdd) requestPlaybackWindow();
     });
   }
+
+  /// Items to read from the Playbacks window: its standard view has one
+  /// per playback (plus wing and header cells), the status view 12 columns
+  /// by up to 17 rows.
+  static const _playbackWindowItems = 256;
+
+  /// Requests the Playbacks window's items, reported on [playbackInfo].
+  void requestPlaybackWindow() => requestWindow(MagicQWindow.playbacks, count: _playbackWindowItems);
+
+  /// Requests [window]'s header and [count] items, reported on
+  /// [windowHeaders] and [windowItems]. Read-only.
+  void requestWindow(int window, {int first = 0, int count = 256}) =>
+      _transport.send(console, ChwpType.window, ChwpRequests.window(window, first: first, count: count));
+
+  /// Reads the steps of the stack MagicQ's Cue Stack window shows, which
+  /// is the console's selected playback unless the window is locked.
+  /// Completes once replies have been quiet for [settle], or throws a
+  /// [TimeoutException] after [timeout] without a usable reply.
+  ///
+  /// [onProgress] gets the steps read so far each time items arrive, so a
+  /// caller can show them before the quiet period ends.
+  Future<({String title, List<CueStep> steps})> readCueStack({
+    Duration settle = const Duration(milliseconds: 200),
+    Duration timeout = const Duration(seconds: 2),
+    void Function(({String title, List<CueStep> steps}) partial)? onProgress,
+  }) async {
+    final reader = CueStackReader();
+    final done = Completer<void>();
+    Timer? quiet;
+    void heard() {
+      quiet?.cancel();
+      quiet = Timer(settle, () {
+        if (!done.isCompleted) done.complete();
+      });
+    }
+
+    final subs = [
+      _windowHeaders.stream.listen((h) {
+        reader.header(h);
+        if (h.window == MagicQWindow.cueStack) heard();
+      }),
+      _windowColumns.stream.listen((c) {
+        reader.columns(c);
+        if (c.window == MagicQWindow.cueStack) heard();
+      }),
+      _windowItems.stream.listen((chunk) {
+        reader.add(chunk);
+        if (chunk.window != MagicQWindow.cueStack) return;
+        heard();
+        final steps = onProgress == null ? null : reader.steps;
+        if (steps != null && steps.isNotEmpty) onProgress!((title: reader.title, steps: steps));
+      }),
+    ];
+    try {
+      requestWindow(MagicQWindow.cueStack, count: _cueStackItems);
+      await done.future.timeout(timeout);
+    } finally {
+      quiet?.cancel();
+      for (final s in subs) {
+        s.cancel();
+      }
+    }
+    final steps = reader.steps;
+    if (steps == null) {
+      throw MagicQConnectException('The Cue Stack window has no "Cue id" column; switch it back to its default view.');
+    }
+    return (title: reader.title, steps: steps);
+  }
+
+  /// Items to read from the Cue Stack window; MagicQ stops at the window's
+  /// own item count.
+  static const _cueStackItems = 0x4000;
+
+  /// Asks for the Cue Stack window's header every [interval] until its
+  /// title passes [accept], and returns that title. Throws a
+  /// [TimeoutException] after [timeout]. Read-only.
+  ///
+  /// MagicQ takes ~0.8-0.9 s to switch the window after a Select press
+  /// (measured live), so wait for the new title before [readCueStack].
+  Future<String> waitForCueStackTitle(
+    bool Function(String title) accept, {
+    Duration interval = const Duration(milliseconds: 50),
+    Duration timeout = const Duration(seconds: 2),
+  }) async {
+    final done = Completer<String>();
+    final sub = _windowHeaders.stream.where((h) => h.window == MagicQWindow.cueStack).listen((h) {
+      if (!done.isCompleted && accept(h.title)) done.complete(h.title);
+    });
+    void ask() => requestWindow(MagicQWindow.cueStack, count: 1);
+    final poll = Timer.periodic(interval, (_) => ask());
+    try {
+      ask();
+      return await done.future.timeout(timeout);
+    } finally {
+      poll.cancel();
+      await sub.cancel();
+    }
+  }
+
+  /// Asks MagicQ for the level and active state of playbacks
+  /// [first]..[last] (1-based), reported on [playbackStates]. Needs a CREP
+  /// tx mode, like the rest of the feedback.
+  void requestPlaybackStates(int first, int last) => sendCrep(CrepCommand.queryPlaybacks(first, last));
 
   void _setOnline(bool value) {
     if (_isOnline == value) return;
@@ -181,13 +303,25 @@ class MagicQClient {
       case ChwpType.connectReply:
         _connectReplies.add(ConnectReply.parse(payload));
       case ChwpType.statusReply:
-        _status.add(ConsoleStatus.parse(payload));
+        final status = ConsoleStatus.parse(payload);
+        lastStatus = status;
+        _status.add(status);
       case ChwpType.executePageReply:
         final page = _assembler.add(ExecutePageChunk.parse(payload));
         if (page != null) {
           _executePage = page;
           _pages.add(page);
         }
+      case ChwpType.windowReply:
+        final info = WindowInfo.parse(payload);
+        _windowHeaders.add(info);
+        _playbackWindow.header(info);
+      case ChwpType.windowColumnsReply:
+        _windowColumns.add(WindowColumns.parse(payload));
+      case ChwpType.windowItemsReply:
+        final chunk = WindowItemsChunk.parse(payload);
+        _windowItems.add(chunk);
+        _playbackWindow.add(chunk).forEach(_playbackInfo.add);
     }
   }
 
@@ -201,8 +335,29 @@ class MagicQClient {
   void requestExecutePage([int? page]) =>
       _transport.send(console, ChwpType.executePage, ChwpRequests.executePage(page: page));
 
-  void setExecuteButton(int index, {required bool pressed}) =>
-      _transport.send(console, ChwpType.executeButton, ChwpRequests.executeButton(index, pressed: pressed));
+  /// Presses or releases an item on the current Execute page.
+  ///
+  /// MagicQ reads the down bit the other way round for flash items: bit
+  /// clear turns the flash on, bit set releases it (confirmed live; with the
+  /// plain encoding a flash latched on release). A release is encoded like
+  /// its press, even if the page changed in between.
+  void setExecuteButton(int index, {required bool pressed}) {
+    final bool flash;
+    if (pressed) {
+      final items = _executePage?.items;
+      flash = items != null && index < items.length && items[index].isFlash;
+      if (flash) _flashesDown.add(index);
+    } else {
+      flash = _flashesDown.remove(index);
+    }
+    _transport.send(
+      console,
+      ChwpType.executeButton,
+      ChwpRequests.executeButton(index, pressed: flash ? !pressed : pressed),
+    );
+  }
+
+  final Set<int> _flashesDown = {};
 
   /// [level] is 0..255.
   void setExecuteFader(int index, int level) {
@@ -281,5 +436,9 @@ class MagicQClient {
     _online.close();
     _playbacks.close();
     _playbackPages.close();
+    _playbackInfo.close();
+    _windowHeaders.close();
+    _windowItems.close();
+    _windowColumns.close();
   }
 }

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/widgets.dart';
 import 'package:magicq_remote/magicq_remote.dart';
 
@@ -7,11 +9,7 @@ import '../widgets/console_button.dart';
 import '../widgets/text_input.dart';
 
 class ConnectScreen extends StatefulWidget {
-  const ConnectScreen({
-    super.key,
-    required this.onSession,
-    this.initialHost = '',
-  });
+  const ConnectScreen({super.key, required this.onSession, this.initialHost = ''});
 
   final ValueChanged<ConsoleSession> onSession;
   final String initialHost;
@@ -74,14 +72,19 @@ class _ConnectScreenState extends State<ConnectScreen> {
         user: _user.text.trim().isEmpty ? null : _user.text.trim(),
         password: _password.text,
       );
-      widget.onSession(LiveSession(client));
+      // Remote control carries the playback buttons and mirrors the
+      // console's playback strips (cue text, speed masters).
+      MagicQRemoteControl? remote;
+      try {
+        remote = await MagicQRemoteControl.start(client.console, screenSync: true);
+      } on SocketException {
+        // TCP 4911 is taken: no cue text or speed masters, and the buttons
+        // use CREP.
+      }
+      widget.onSession(LiveSession(client, remote: remote));
     } catch (e) {
       if (!mounted) return;
-      setState(
-        () => _error = e is MagicQConnectException
-            ? e.message
-            : 'Could not connect: $e',
-      );
+      setState(() => _error = e is MagicQConnectException ? e.message : 'Could not connect: $e');
     } finally {
       if (mounted) setState(() => _connecting = false);
     }
@@ -107,58 +110,34 @@ class _ConnectScreenState extends State<ConnectScreen> {
                     style: TextStyles.body.copyWith(color: Palette.textDim),
                   ),
                   const SizedBox(height: 24),
-                  _section(
-                    'Consoles found',
-                    trailing: _scanning ? 'Scanning…' : null,
-                  ),
+                  _section('Consoles found', trailing: _scanning ? 'Scanning…' : null),
                   if (_found.isEmpty && !_scanning)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Text(
-                        'None found. Enter the address below.',
-                        style: TextStyles.small,
-                      ),
+                      child: Text('None found. Enter the address below.', style: TextStyles.small),
                     ),
                   for (final c in _found) ...[
-                    _ConsoleRow(
-                      info: c,
-                      onTap: _connecting ? null : () => _connect(c.address),
-                    ),
+                    _ConsoleRow(info: c, onTap: _connecting ? null : () => _connect(c.address)),
                     const SizedBox(height: 4),
                   ],
                   const SizedBox(height: 4),
-                  ConsoleButton(
-                    label: 'Scan again',
-                    height: 36,
-                    onDown: _scanning ? null : _scan,
-                  ),
+                  ConsoleButton(label: 'Scan again', height: 36, onDown: _scanning ? null : _scan),
                   const SizedBox(height: 24),
                   _section('Address'),
                   Localizations.override(
                     context: context,
                     locale: const Locale('en', 'US'),
-                    child: TextInput(
-                      controller: _host,
-                      placeholder: '192.168.1.10',
-                      onSubmitted: _connect,
-                    ),
+                    child: TextInput(controller: _host, placeholder: '192.168.1.10', onSubmitted: _connect),
                   ),
                   const SizedBox(height: 8),
                   Row(
                     children: [
                       Expanded(
-                        child: TextInput(
-                          controller: _user,
-                          placeholder: 'User (if set up)',
-                        ),
+                        child: TextInput(controller: _user, placeholder: 'User (if set up)'),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
-                        child: TextInput(
-                          controller: _password,
-                          placeholder: 'Password',
-                          obscure: true,
-                        ),
+                        child: TextInput(controller: _password, placeholder: 'Password', obscure: true),
                       ),
                     ],
                   ),
@@ -171,15 +150,15 @@ class _ConnectScreenState extends State<ConnectScreen> {
                   ),
                   if (_error != null) ...[
                     const SizedBox(height: 12),
-                    Text(
-                      _error!,
-                      style: TextStyles.body.copyWith(color: Palette.flash),
-                    ),
+                    Text(_error!, style: TextStyles.body.copyWith(color: Palette.flash)),
                   ],
                   const SizedBox(height: 28),
                   Text(
                     'In MagicQ Setup, turn on "Enable remote app". Playback faders '
-                    'also need "Ethernet remote protocol" set to "ChamSys Rem (tx + rx)".',
+                    'also need "Ethernet remote protocol" set to "ChamSys Rem (tx + rx)". '
+                    'Cue text, speed masters and native playback buttons need "Enable remote '
+                    'control": the app mirrors the console\'s playback display as a remote '
+                    'MagicQ does, and its buttons act exactly like the console\'s own.',
                     style: TextStyles.small,
                   ),
                   const SizedBox(height: 16),
@@ -223,9 +202,7 @@ class _ConsoleRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: Palette.raised,
-          border: const Border(
-            left: BorderSide(color: Palette.online, width: 3),
-          ),
+          border: const Border(left: BorderSide(color: Palette.online, width: 3)),
         ),
         child: Row(
           children: [
@@ -233,21 +210,12 @@ class _ConsoleRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    info.displayName,
-                    style: TextStyles.label.copyWith(fontSize: 14),
-                  ),
-                  Text(
-                    '${info.address}, MagicQ ${info.version}',
-                    style: TextStyles.small,
-                  ),
+                  Text(info.displayName, style: TextStyles.label.copyWith(fontSize: 14)),
+                  Text('${info.address}, MagicQ ${info.version}', style: TextStyles.small),
                 ],
               ),
             ),
-            Text(
-              'Connect',
-              style: TextStyles.label.copyWith(color: Palette.live),
-            ),
+            Text('Connect', style: TextStyles.label.copyWith(color: Palette.live)),
           ],
         ),
       ),

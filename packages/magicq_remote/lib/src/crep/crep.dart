@@ -54,8 +54,27 @@ abstract final class CrepCommand {
   static String stop(int playback) => '${playback}S';
   static String back(int playback) => '${playback}B';
 
+  /// Jumps [playback] to the step whose cue ID is [cue] ("5" or "5.5"),
+  /// with the cue's own times, activating the playback if needed.
+  ///
+  /// MagicQ (`FUN_1004888d0`, `J`) matches `whole + hundredths / 100`
+  /// against each step's cue ID and runs `FUN_10051ad40(pb, step, 0, 0)`,
+  /// the timed jump; the same format it sends as feedback.
+  static String jump(int playback, String cue) {
+    final parts = cue.trim().split('.');
+    final whole = int.tryParse(parts[0]) ?? 0;
+    final decimals = parts.length > 1 ? '${parts[1]}00'.substring(0, 2) : '00';
+    return '$playback,$whole,${int.tryParse(decimals) ?? 0}J';
+  }
+
   /// Selects playback page [page] (1-based).
   static String page(int page) => '${page}P';
+
+  /// Asks for the level and active state of playbacks [first]..[last]
+  /// (1-based). In a tx mode MagicQ broadcasts `78,pb,level,active,...H`
+  /// back on the CREP port (`FUN_100486300`, case 78), with the level at
+  /// 0..256; see [interpretCrep].
+  static String queryPlaybacks(int first, int last) => '78,$first,${last}H';
 }
 
 /// One parsed CREP command: numeric arguments followed by a letter.
@@ -131,7 +150,13 @@ class PlaybackState {
 ///
 /// MagicQ sends `pb,levelL` on level changes, `pb,levelLpbA` on activate,
 /// `pbR` on release, `pb,cue,decimalJ` when a cue starts and `pageP` on
-/// playback page changes (see `FUN_10048a660`..`FUN_10048b1a8`).
+/// playback page changes (see `FUN_10048a660`..`FUN_10048b1a8`), and
+/// `78,pb,level,active,...H` in reply to [CrepCommand.queryPlaybacks].
+///
+/// The reply's level is the playback's intensity table (`DAT_102084120`,
+/// written by `FUN_10051a000`): the fader (or a held flash, at full)
+/// scaled by the grand and sub masters, or those masters alone for a
+/// stack whose fader doesn't control intensity. From the binary only.
 ({List<PlaybackState> playbacks, int? page}) interpretCrep(List<CrepMessage> messages) {
   final playbacks = <PlaybackState>[];
   int? page;
@@ -152,6 +177,16 @@ class PlaybackState {
         playbacks.add(PlaybackState(playback: m.intArg(0), cue: cue));
       case 'P':
         page = m.intArg(0);
+      case 'H' when m.intArg(0) == 78:
+        for (var i = 1; i + 2 < m.args.length; i += 3) {
+          playbacks.add(
+            PlaybackState(
+              playback: m.intArg(i),
+              level: (m.args[i + 1] * 100 / 256).clamp(0, 100),
+              active: m.args[i + 2] != 0,
+            ),
+          );
+        }
     }
   }
   return (playbacks: playbacks, page: page);

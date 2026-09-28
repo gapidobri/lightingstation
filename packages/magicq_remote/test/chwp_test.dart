@@ -65,7 +65,13 @@ void main() {
   });
 
   group('execute page', () {
-    Uint8List chunk({required int start, required List<String> names}) {
+    Uint8List chunk({
+      required int start,
+      required List<String> names,
+      int flags = 0x0011, // exists + fader
+      int extra = 0x80, // active in colour mode
+      int state = 0x80ff8000,
+    }) {
       final header = payloadOf(
         (w) => w
           ..u32(2)
@@ -78,10 +84,10 @@ void main() {
         w.u16(start);
         for (final n in names) {
           w
-            ..u16(0x0011) // exists + fader
+            ..u16(flags)
             ..u16(0)
-            ..u32(0x80) // active in colour mode
-            ..u32(0x80ff8000)
+            ..u32(extra)
+            ..u32(state)
             ..u32(0)
             ..u16(200)
             ..cString('')
@@ -116,6 +122,58 @@ void main() {
       expect(page.items.map((i) => i.name), ['A', 'B', 'C', 'D']);
       expect(page.itemAt(1, 0).name, 'C');
     });
+
+    test('gives an active group item without a colour its colour back', () {
+      // As captured live: flags 0x401, inactive = dimmed colour, active = state 1.
+      ExecuteItem group(ExecutePageAssembler a, int state) => a
+          .add(
+            ExecutePageChunk.parse(
+              chunk(start: 0, names: ['G1', 'G2', 'G3', 'G4'], flags: 0x401, extra: 0, state: state),
+            ),
+          )!
+          .items
+          .first;
+
+      final seen = ExecutePageAssembler();
+      final inactive = group(seen, 0x805f0018);
+      expect((inactive.active, inactive.rgb), (false, 0x5f0018));
+      final active = group(seen, 1);
+      expect((active.active, active.rgb), (true, 0xba002f));
+
+      final fresh = group(ExecutePageAssembler(), 1);
+      expect((fresh.active, fresh.rgb), (true, 0xbb0030));
+    });
+
+    test('reads item sizes from the top byte of extra', () {
+      const item = ExecuteItem(index: 0, flags: 1, extra: 0x21000080);
+      expect(item.width, 3);
+      expect(item.height, 2);
+      expect(const ExecuteItem(index: 0).width, 1);
+      expect(const ExecuteItem(index: 0, flags: 0x11, borders: 0x80).height, 2);
+    });
+
+    test('reads region edges from the low border bits', () {
+      const item = ExecuteItem(index: 0, flags: 1, borders: 0x85); // top, left, tall fader
+      expect((item.regionTop, item.regionBottom, item.regionLeft, item.regionRight), (true, false, true, false));
+      expect(item.hasRegionEdge, isTrue);
+      expect(const ExecuteItem(index: 0, flags: 1, borders: 0x280).hasRegionEdge, isFalse);
+    });
+
+    test('layout spans sized items and skips the cells they cover', () {
+      ExecutePage page(List<ExecuteItem> items) =>
+          ExecutePage(page: 1, name: '', columns: 3, rows: 2, flags: 0, items: items);
+      final cells = page([
+        const ExecuteItem(index: 0, flags: 1, extra: 0x11000000), // 2x2
+        const ExecuteItem(index: 1, flags: 1, name: 'covered'),
+        const ExecuteItem(index: 2, flags: 1, extra: 0x30000000), // 4 wide, clipped to 1
+        const ExecuteItem.empty(3),
+        const ExecuteItem.empty(4),
+        const ExecuteItem(index: 5, flags: 0x11, borders: 0x200), // lower half of a tall fader
+      ]).layout;
+      expect(cells.map((c) => c.item.index), [0, 2]);
+      expect((cells[0].width, cells[0].height), (2, 2));
+      expect((cells[1].column, cells[1].width, cells[1].height), (2, 1, 1));
+    });
   });
 
   group('crep feedback', () {
@@ -148,6 +206,14 @@ void main() {
       expect((s[4].playback, s[4].active), (4, false));
     });
 
+    test('reads the playback query reply, levels 0..256', () {
+      expect(CrepCommand.queryPlaybacks(1, 10), '78,1,10H');
+      final s = interpretCrep(parseCrepCommands('78,1,256,1,2,128,0,3,0,0H')).playbacks;
+      expect(s.map((p) => (p.playback, p.level, p.active)), [(1, 100, true), (2, 50, false), (3, 0, false)]);
+      // Other H replies (e.g. 79, encoder speeds) aren't playback state.
+      expect(interpretCrep(parseCrepCommands('79,0,1,2H')).playbacks, isEmpty);
+    });
+
     test('ignores other datagrams', () {
       expect(decodeCrep('hello world!'.codeUnits), isEmpty);
     });
@@ -162,6 +228,15 @@ void main() {
       expect(String.fromCharCodes(bytes.sublist(10)), '3,50.0977L1G');
       expect(CrepCommand.level(2, 0), '2,0L');
       expect(CrepCommand.level(2, 100), '2,100L');
+    });
+
+    test('jump sends the cue as whole and hundredths, as MagicQ reads it', () {
+      expect(CrepCommand.jump(1, '5'), '1,5,0J');
+      expect(CrepCommand.jump(2, '5.5'), '2,5,50J');
+      expect(CrepCommand.jump(3, '12.05'), '3,12,5J');
+      // Round-trips through the feedback parser.
+      final back = interpretCrep(parseCrepCommands(CrepCommand.jump(4, '7.25'))).playbacks.single;
+      expect((back.playback, back.cue), (4, '7.25'));
     });
 
     test('levels hit every one of MagicQ\'s 257 fader steps', () {

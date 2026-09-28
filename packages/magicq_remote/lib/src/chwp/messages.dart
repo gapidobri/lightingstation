@@ -16,6 +16,14 @@ abstract final class ChwpType {
   /// Request an Execute page. Reply: [executePageReply].
   static const executePage = 0x06;
 
+  /// Read a MagicQ window's header and items (read-only, no window is
+  /// selected). Replies: [windowReply], [windowItemsReply].
+  static const window = 0x08;
+
+  /// Select a MagicQ window on the console (flag bit 0), opening it, or an
+  /// item in it. This changes the console's screen.
+  static const windowSelect = 0x0c;
+
   /// Set the level of a fader item on the client's current Execute page.
   static const executeFader = 0x0e;
 
@@ -26,6 +34,11 @@ abstract final class ChwpType {
   static const connectReply = 0x8001;
   static const statusReply = 0x8002;
   static const executePageReply = 0x8003;
+  static const windowReply = 0x8006;
+  static const windowItemsReply = 0x8007;
+
+  /// Column headers of a table window, after [windowReply].
+  static const windowColumnsReply = 0x8008;
   static const infoReply = 0x800d;
 }
 
@@ -54,6 +67,16 @@ abstract final class ChwpRequests {
             ..u16(page ?? 1)
             ..u16(colourMode ? 1 : 0)
             ..u16(page == null ? 0 : 1))
+          .toBytes();
+
+  /// Requests [window]'s header and [count] items from [first]
+  /// (`FUN_100543870`; MagicQ only reads, and allows it in demo mode).
+  static Uint8List window(int window, {int first = 0, int count = 0}) =>
+      (PayloadWriter()
+            ..u16(0)
+            ..u16(window)
+            ..u16(first)
+            ..u16(count))
           .toBytes();
 
   /// [index] is row-major across the page grid.

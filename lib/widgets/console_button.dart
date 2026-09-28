@@ -88,9 +88,50 @@ class _ConsoleButtonState extends State<ConsoleButton> {
   }
 }
 
-/// Two vertical bars, for narrow Pause keys.
-Widget pauseIcon(BuildContext context) {
-  final colour = IconTheme.of(context).color ?? Palette.text;
-  final bar = Container(width: 3, height: 12, color: colour);
-  return Row(mainAxisSize: MainAxisSize.min, children: [bar, const SizedBox(width: 3), bar]);
+/// Painted play or pause glyph (the app has no icon font), drawn in the
+/// surrounding [IconTheme] colour.
+class TransportIcon extends StatelessWidget {
+  const TransportIcon.play({super.key, this.size = 16}) : pause = false;
+  const TransportIcon.pause({super.key, this.size = 16}) : pause = true;
+
+  final bool pause;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final colour = IconTheme.of(context).color ?? Palette.text;
+    return CustomPaint(
+      size: Size.square(size),
+      painter: _TransportPainter(pause: pause, colour: colour),
+    );
+  }
+}
+
+class _TransportPainter extends CustomPainter {
+  const _TransportPainter({required this.pause, required this.colour});
+
+  final bool pause;
+  final Color colour;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = colour;
+    final w = size.width;
+    final h = size.height;
+    if (pause) {
+      final bar = w * 0.3;
+      canvas.drawRect(Rect.fromLTWH(w * 0.12, 0, bar, h), paint);
+      canvas.drawRect(Rect.fromLTWH(w * 0.88 - bar, 0, bar, h), paint);
+    } else {
+      final path = Path()
+        ..moveTo(w * 0.12, 0)
+        ..lineTo(w * 0.95, h / 2)
+        ..lineTo(w * 0.12, h)
+        ..close();
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_TransportPainter old) => old.pause != pause || old.colour != colour;
 }
