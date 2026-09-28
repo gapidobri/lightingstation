@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:magicq_remote/magicq_remote.dart';
 
+import '../notch.dart';
 import '../session.dart';
 import '../theme.dart';
 import '../widgets/console_button.dart';
@@ -106,15 +107,16 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
   }
 
   Widget _console(BuildContext context, {required bool compact}) {
+    final safe = MediaQuery.paddingOf(context);
     return ColoredBox(
       color: Palette.chassis,
-      // iOS pads both landscape edges and the bottom (home indicator); only
-      // the left edge, where the Dynamic Island sits, needs it.
-      child: SafeArea(
-        right: false,
-        bottom: false,
+      // iOS pads both landscape edges and the bottom (home indicator). The top
+      // bar reaches the rounded corners, so it keeps both edges; below it only
+      // the notch's edge needs the room.
+      child: Padding(
+        padding: EdgeInsets.only(top: safe.top),
         child: ListenableBuilder(
-          listenable: widget.session,
+          listenable: Listenable.merge([widget.session, NotchSide.side]),
           builder: (context, _) {
             final session = widget.session;
             return Column(
@@ -122,6 +124,7 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
               children: [
                 _TopBar(
                   session: session,
+                  insets: EdgeInsets.only(left: safe.left, right: safe.right),
                   view: _view,
                   compact: compact,
                   steppers: _steppers(session, compact: compact),
@@ -134,17 +137,27 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
                 ),
                 Expanded(
                   child: Padding(
-                    padding: EdgeInsets.fromLTRB(compact ? 2 : 4, 4, compact ? 2 : 4, compact ? 2 : 6),
-                    child: switch (_view) {
-                      ConsoleView.playbacks => _playbacks(session, compact: compact, scroll: false),
-                      ConsoleView.execute => _ExecuteView(session: session),
-                      ConsoleView.split => _SplitPanes(
-                        fraction: _split,
-                        onChanged: (f) => setState(() => _split = f),
-                        left: _playbacks(session, compact: compact, scroll: true),
-                        right: _ExecuteView(session: session),
-                      ),
-                    },
+                    padding:
+                        EdgeInsets.fromLTRB(compact ? 2 : 4, 4, compact ? 2 : 4, compact ? 2 : 6) +
+                        NotchSide.notchOnly(safe, NotchSide.side.value),
+                    // The insets are handled here; scroll views would add them again.
+                    child: MediaQuery.removePadding(
+                      context: context,
+                      removeLeft: true,
+                      removeTop: true,
+                      removeRight: true,
+                      removeBottom: true,
+                      child: switch (_view) {
+                        ConsoleView.playbacks => _playbacks(session, compact: compact, scroll: false),
+                        ConsoleView.execute => _ExecuteView(session: session),
+                        ConsoleView.split => _SplitPanes(
+                          fraction: _split,
+                          onChanged: (f) => setState(() => _split = f),
+                          left: _playbacks(session, compact: compact, scroll: true),
+                          right: _ExecuteView(session: session),
+                        ),
+                      },
+                    ),
                   ),
                 ),
               ],
@@ -241,6 +254,7 @@ class _SplitPanesState extends State<_SplitPanes> {
 class _TopBar extends StatelessWidget {
   const _TopBar({
     required this.session,
+    required this.insets,
     required this.view,
     required this.compact,
     required this.steppers,
@@ -253,6 +267,9 @@ class _TopBar extends StatelessWidget {
   });
 
   final ConsoleSession session;
+
+  /// Safe-area insets for the bar's contents; its background runs edge to edge.
+  final EdgeInsets insets;
   final ConsoleView view;
   final bool compact;
   final List<Widget> steppers;
@@ -270,7 +287,7 @@ class _TopBar extends StatelessWidget {
     final keyHeight = compact ? 34.0 : 38.0;
     return Container(
       height: compact ? 44 : 52,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8) + insets,
       decoration: const BoxDecoration(
         color: Palette.panel,
         border: Border(bottom: BorderSide(color: Palette.slot, width: 2)),

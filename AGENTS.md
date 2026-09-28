@@ -23,6 +23,7 @@ lib/                          Flutter app (widgets only, no Material)
   session.dart                ConsoleSession: LiveSession (real console) and DemoSession (offline)
   theme.dart                  Palette and TextStyles tokens
   wifi_lock.dart              Android Wi-Fi low-latency lock (method channel)
+  notch.dart                  Which landscape edge has the notch (iOS method channel)
   screens/                    connect_screen.dart, console_screen.dart
   widgets/                    fader, console_button, hold_button, playback_strip, execute_grid, cue_picker, text_input
 packages/magicq_remote/       Pure Dart protocol package (no Flutter)
@@ -215,6 +216,10 @@ faders, buttons and feedback, because CHWP has no playback messages.
   Pause; the labelling line is hidden on the strip.
 - The screen stays awake while the app is open (`FLAG_KEEP_SCREEN_ON` in
   MainActivity, `isIdleTimerDisabled` in AppDelegate).
+- Safe area: the top bar's contents stay inside both landscape insets
+  (rounded corners); below it only the notch's edge is padded. iOS reports
+  equal insets on both edges, so `NotchSide` (`lib/notch.dart`) gets the
+  side from the interface orientation over a channel in AppDelegate.
 - Faders use relative drag, so they never jump to the finger.
 - Exit (Disconnect) must be held for 800 ms (`HoldButton`, with a ring
   that fills while held), so a stray touch can't drop the link mid-show.

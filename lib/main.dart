@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import 'notch.dart';
 import 'screens/connect_screen.dart';
 import 'screens/console_screen.dart';
 import 'session.dart';
@@ -11,6 +12,7 @@ void main() {
   SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
   // A desk layout: landscape only.
   SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+  NotchSide.init();
   runApp(const LightingStationApp());
 }
 
